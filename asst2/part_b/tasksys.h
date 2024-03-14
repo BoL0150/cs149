@@ -1,3 +1,13 @@
+#include <memory>
+#include <unordered_set>
+#include <unordered_map>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <functional>
+#include <queue>
+#include <vector>
+#include <thread>
 #ifndef _TASKSYS_H
 #define _TASKSYS_H
 
@@ -53,6 +63,17 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         void sync();
 };
 
+class Bulk {
+    public:
+        Bulk (TaskID bulk_id, std::queue<std::function<void(void)>> && q, const std::vector<TaskID> &deps) : bulk_id(bulk_id), task_queue(q) {
+            for (auto id : deps) {
+                this->deps.insert(id);
+            }
+        };
+        TaskID bulk_id;
+        std::queue<std::function<void(void)>> task_queue;
+        std::unordered_set<TaskID>deps;
+};
 /*
  * TaskSystemParallelThreadPoolSleeping: This class is the student's
  * optimized implementation of a parallel task execution engine that uses
@@ -60,6 +81,21 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * itasksys.h for documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
+    private:
+        std::atomic<int> task_id = 0;
+        std::condition_variable producer;
+        std::condition_variable consumer;
+        std::vector<std::thread> thread_vector;
+        std::mutex ready_q_mtx;
+        std::queue<std::shared_ptr<Bulk>> ready_bulk_queue;
+        // std::mutex waiting_q_mtx;
+        // std::queue<std::function<void(void)>> waiting_task_queue;
+        std::mutex wait_for_mtx;
+        std::unordered_map<TaskID, std::vector<std::shared_ptr<Bulk>>> waits_for;
+
+        int num_threads;
+        std::atomic<int> remain_tasks;
+        bool stop;
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();

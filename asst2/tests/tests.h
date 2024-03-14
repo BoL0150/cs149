@@ -508,7 +508,7 @@ class StrictDependencyTask: public IRunnable {
 TestResults simpleTest(ITaskSystem* t, bool do_async) {
     int num_elements_per_task = 2;
     int num_tasks = 3;
-    int num_elements = num_elements_per_task * num_tasks;
+    int num_elements = num_elements_per_task * num_tasks; // 6
     int num_bulk_task_launches = 2;
 
     int* array = new int[num_elements];
@@ -676,7 +676,6 @@ TestResults superSuperLightAsyncTest(ITaskSystem* t) {
     int base_iters = 0;
     return pingPongTest(t, true, true, num_elements, base_iters);
 }
-
 TestResults superLightTest(ITaskSystem* t) {
     int num_elements = 32 * 1024;
     int base_iters = 32;

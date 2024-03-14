@@ -1,3 +1,4 @@
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <functional>
@@ -52,8 +53,6 @@ class TaskSystemParallelSpawn: public ITaskSystem {
  */
 class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
     private:    
-        std::condition_variable consumer;
-        std::condition_variable producer;
         std::vector<std::thread> thread_vector;
         std::queue<std::function<void(void)>> task_queue;
         std::mutex task_mutex;
@@ -76,6 +75,15 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * itasksys.h for documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
+    private:
+        std::condition_variable producer;
+        std::condition_variable consumer;
+        std::vector<std::thread> thread_vector;
+        std::queue<std::function<void(void)>> task_queue;
+        std::mutex task_mutex;
+        int num_threads;
+        std::atomic<int> remain_tasks;
+        bool stop;
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
