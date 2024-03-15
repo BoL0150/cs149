@@ -65,14 +65,13 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
 
 class Bulk {
     public:
-        Bulk (TaskID bulk_id, std::queue<std::function<void(void)>> && q, const std::vector<TaskID> &deps) : bulk_id(bulk_id), task_queue(q) {
-            for (auto id : deps) {
-                this->deps.insert(id);
-            }
+        Bulk (TaskID bulk_id, std::queue<std::function<void(void)>> && q) : bulk_id(bulk_id), task_queue(q) {
+            task_num = q.size();
         };
         TaskID bulk_id;
         std::queue<std::function<void(void)>> task_queue;
         std::unordered_set<TaskID>deps;
+        std::atomic<int> task_num;
 };
 /*
  * TaskSystemParallelThreadPoolSleeping: This class is the student's
@@ -82,20 +81,19 @@ class Bulk {
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     private:
-        std::atomic<int> task_id = 0;
-        std::condition_variable producer;
-        std::condition_variable consumer;
+        std::atomic<int> task_id;
         std::vector<std::thread> thread_vector;
+
         std::mutex ready_q_mtx;
         std::queue<std::shared_ptr<Bulk>> ready_bulk_queue;
-        // std::mutex waiting_q_mtx;
-        // std::queue<std::function<void(void)>> waiting_task_queue;
+        std::condition_variable consumer;
+        bool stop;
+
         std::mutex wait_for_mtx;
         std::unordered_map<TaskID, std::vector<std::shared_ptr<Bulk>>> waits_for;
+        std::condition_variable sync_cv;
 
         int num_threads;
-        std::atomic<int> remain_tasks;
-        bool stop;
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();

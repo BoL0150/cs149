@@ -1,3 +1,4 @@
+#include <iostream>
 #include "tasksys.h"
 
 
@@ -126,11 +127,11 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), num_threads(num_threads), remain_tasks(0), stop(false) {
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), task_id(0), stop(false), num_threads(num_threads){
     for (int i = 0; i < num_threads; i++) {
         thread_vector.emplace_back(std::thread([&]() {
             while (1) {
-                Bulk *cur_bulk;
+                std::shared_ptr<Bulk> cur_bulk;
                 std::function<void(void)> cur_task;
                 {
                     std::unique_lock<std::mutex> lk(ready_q_mtx);
@@ -138,30 +139,42 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                         consumer.wait(lk);
                     }
                     if (stop) return;
-                    cur_bulk = &ready_bulk_queue.front();
+                    cur_bulk = ready_bulk_queue.front();
                     cur_task = std::move(cur_bulk->task_queue.front());
                     cur_bulk->task_queue.pop();
+                    // 如果bulk的任务队列空了，说明bulk执行完了，将它在wait_for中的条目删除
+                    if (cur_bulk->task_queue.empty()) 
+                        ready_bulk_queue.pop();
                 }
                 cur_task();
-                {
-                    std::unique_lock<std::mutex> lk(ready_q_mtx);
-                    // 如果bulk的任务队列空了，说明bulk执行完了
-                    if (cur_bulk->task_queue.empty()) {
-                        ready_bulk_queue.pop();
-                        std::vector<Bulk> &blocked_by_cur_bulk = waits_for[cur_bulk->bulk_id];
+
+                cur_bulk->task_num--;
+                // bulk的所有任务执行完了
+                if (cur_bulk->task_num == 0) {
+                    std::vector<std::shared_ptr<Bulk>> ready_bulks;
+                    {
+                        std::unique_lock<std::mutex> lk(wait_for_mtx);
+                        std::vector<std::shared_ptr<Bulk>>& blocked_by_cur_bulk = waits_for[cur_bulk->bulk_id];
                         // 遍历所有被当前bulk阻塞的bulk
                         for (auto & blocked_bulk : blocked_by_cur_bulk) {
-                            blocked_bulk.deps.erase(cur_bulk->bulk_id);
+                            blocked_bulk->deps.erase(cur_bulk->bulk_id);
                             // 如果bulk的依赖全部消失了，那么该bulk就可以执行
-                            if (blocked_bulk.deps.empty()) {
-                                ready_bulk_queue.emplace(std::move(blocked_bulk));
+                            if (blocked_bulk->deps.empty()) {
+                                ready_bulks.push_back(std::move(blocked_bulk));
                             }
                         }
-                   }
-                    
-                        
+                        // bulk执行完了就要从waits_for中移除
+                        waits_for.erase(cur_bulk->bulk_id);
+                        std::cout << "waits_for size:" << waits_for.size() << std::endl;
+                        if (waits_for.empty()) sync_cv.notify_one();
                     }
-                     
+                    if (!ready_bulks.empty()) {
+                        std::unique_lock<std::mutex> ready_lk(ready_q_mtx);
+                        for (auto& bulk : ready_bulks) {
+                            ready_bulk_queue.push(std::move(bulk));
+                        }
+                        consumer.notify_all();
+                    }
                 }
             }
         }));
@@ -169,12 +182,17 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    //
-    // TODO: CS149 student implementations may decide to perform cleanup
-    // operations (such as thread pool shutdown construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+    {
+        std::unique_lock<std::mutex> lk(ready_q_mtx);
+        stop = true;
+    }
+    consumer.notify_all();
+    std::cout << "fuck you" << std::endl;
+    for (auto &thread : thread_vector) {
+        static int i = 0;
+        thread.join();
+        std::cout << "finished join thread:" << i++ << std::endl;
+    }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
@@ -197,33 +215,36 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     TaskID cur_id = task_id++;
     std::queue<std::function<void(void)>> task_queue;
     for (int i = 0; i < num_total_tasks; i++) {
-        task_queue.emplace([&runnable, i, num_total_tasks] () {
+        task_queue.emplace([runnable, i, num_total_tasks] () {
             runnable->runTask(i, num_total_tasks);
         });
     }
     bool is_ready = true;
-    std::shared_ptr<Bulk> cur_bulk = make_shared<Bulk>(cur_id, std::move(task_queue), deps);
+    std::shared_ptr<Bulk> cur_bulk = std::make_shared<Bulk>(cur_id, std::move(task_queue));
     for (auto id : deps) {
         std::unique_lock<std::mutex> lk(wait_for_mtx);
+        // 如果一个bulk的id在waits_for中不存在，就说明该bulk已经结束
         if (!waits_for.count(id)) continue;
+        // 如果没有结束，则记录依赖
+        cur_bulk->deps.insert(id);
         is_ready = false;
-        waits_for[id].emplace_back(cur_id, std::move(task_queue), deps);
-        break;
+        waits_for[id].push_back(cur_bulk);
     }
     if (deps.empty() || is_ready) {
         std::unique_lock<std::mutex> lk (ready_q_mtx);
-        ready_bulk_queue.emplace(cur_id, std::move(task_queue), deps);
+        ready_bulk_queue.push(cur_bulk);
         consumer.notify_all();
     } 
-    waits_for[cur_id] = std::vector<Bulk>();
+    std::unique_lock<std::mutex> lk(wait_for_mtx);
+    // 正在运行或者等待运行的bulk都要记录在waits_for中
+    waits_for[cur_id] = std::vector<std::shared_ptr<Bulk>>();
+    std::cout << "waits_for size:" << waits_for.size() << std::endl;
     return cur_id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
-
-    //
-    // TODO: CS149 students will modify the implementation of this method in Part B.
-    //
-
-    return;
+    std::unique_lock<std::mutex> lk(wait_for_mtx);
+    while (!waits_for.empty()) {
+        sync_cv.wait(lk);
+    }
 }

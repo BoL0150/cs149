@@ -1,5 +1,5 @@
 CXX=g++ -m64
-CXXFLAGS=-I. -I../common -I../tests -Iobjs/ -O3 -std=c++11 -Wall
+CXXFLAGS=-I. -I../common -I../tests -Iobjs/ -Og -std=c++11 -Wall -g
 
 APP_NAME=runtasks
 OBJDIR=objs
