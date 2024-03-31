@@ -1,0 +1,10 @@
+---------------------------------------------------------
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce RTX 4050 Laptop GPU
+   SMs:        20
+   Global mem: 6140 MB
+   CUDA Cap:   8.9
+---------------------------------------------------------
+Array size: 10000000
+Student GPU time: 18.892 ms
+Find_repeats outputs are correct!
