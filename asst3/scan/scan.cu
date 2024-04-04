@@ -28,7 +28,7 @@ static inline int nextPow2(int n) {
   return n;
 }
 
-__global__ void check_gpu_data(int * deivce_array, int length) {
+__global__ void check_gpu_data(int *deivce_array, int length) {
   for (int i = 0; i < length; i += 1000) {
     printf("%d", deivce_array[i]);
   }
@@ -76,7 +76,6 @@ __global__ void downsweep_kernel(int computation_nums, int *result,
 // places it in result
 void exclusive_scan(int *input, int64_t N, int *result) {
 
-  // CS149 TODO:
   int64_t rounded_length = nextPow2(N);
   // upsweep phase
   for (int64_t two_d = 1; two_d <= rounded_length / 2; two_d *= 2) {
@@ -219,30 +218,27 @@ __global__ void find_repeats_kernel(int *scan_result, int *marks, int length,
 // Returns the total number of pairs found
 int find_repeats(int *device_input, int length, int *device_output) {
 
-  // CS149 TODO:
-  //
-  // Implement this function. You will probably want to
-  // make use of one or more calls to exclusive_scan(), as well as
-  // additional CUDA kernel launches.
   const int rounded_length = nextPow2(length);
-  const int blocks = (rounded_length + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+  const int blocks =
+      (rounded_length + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
   int *marks;
   int *scan_result;
   cudaMalloc(&marks, sizeof(int) * rounded_length);
   cudaMalloc(&scan_result, sizeof(int) * rounded_length);
 
-  mark_repeats<<<blocks, THREADS_PER_BLOCK>>>(device_input, marks, rounded_length);
+  mark_repeats<<<blocks, THREADS_PER_BLOCK>>>(device_input, marks,
+                                              rounded_length);
   cudaDeviceSynchronize();
   cudaMemcpy(scan_result, marks, sizeof(int) * rounded_length,
              cudaMemcpyDeviceToDevice);
   // 注意，exclusive_scan要求input和result数组都是2的幂，否则就会出错
   // 所以marks和scan_result一定要是2的幂
   exclusive_scan(marks, rounded_length, scan_result);
-  find_repeats_kernel<<<blocks, THREADS_PER_BLOCK>>>(scan_result, marks, rounded_length,
-                                                     device_output);
+  find_repeats_kernel<<<blocks, THREADS_PER_BLOCK>>>(
+      scan_result, marks, rounded_length, device_output);
   cudaDeviceSynchronize();
   int count;
-  cudaMemcpy(&count, scan_result + length- 1, sizeof(int),
+  cudaMemcpy(&count, scan_result + length - 1, sizeof(int),
              cudaMemcpyDeviceToHost);
   cudaFree(marks);
   cudaFree(scan_result);
