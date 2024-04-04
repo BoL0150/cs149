@@ -1,0 +1,25 @@
+Rendering to 1024x1024 image
+Loaded scene with 4 circles
+Loaded scene with 4 circles
+---------------------------------------------------------
+Initializing CUDA for CudaRenderer
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce RTX 4050 Laptop GPU
+   SMs:        20
+   Global mem: 6140 MB
+   CUDA Cap:   8.9
+---------------------------------------------------------
+
+Running benchmark, 1 frames, beginning at frame 0 ...
+Dumping frames to output_xxx.ppm
+Copying image data from device
+Wrote image file output_0000.ppm
+Copying image data from device
+***************** Correctness check passed **************************
+Clear:    0.3960 ms
+Advance:  0.0012 ms
+Render:   10.7868 ms
+Total:    11.1840 ms
+File IO:  69.9936 ms
+
+Overall:  0.0963 sec (note units are seconds)

@@ -1,0 +1,26 @@
+Rendering to 1024x1024 image
+Loaded data for 100000 circles from snow.par
+Loaded scene with 100000 circles
+Loaded data for 100000 circles from snow.par
+Loaded scene with 100000 circles
+---------------------------------------------------------
+Initializing CUDA for CudaRenderer
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce RTX 4050 Laptop GPU
+   SMs:        20
+   Global mem: 6140 MB
+   CUDA Cap:   8.9
+---------------------------------------------------------
+
+Running benchmark, 1 frames, beginning at frame 0 ...
+Dumping frames to output_xxx.ppm
+Copying image data from device
+Wrote image file output_0000.ppm
+Copying image data from device
+Mismatch detected at pixel [0][0], value = 0.000000, expected 0.858540 for color Red
+Mismatch detected at pixel [0][0], value = 0.000000, expected 0.868505 for color Green
+Mismatch detected at pixel [0][0], value = 0.000000, expected 0.879453 for color Blue
+Mismatch detected at pixel [0][1], value = 0.000000, expected 0.867634 for color Red
+Mismatch detected at pixel [0][1], value = 0.000000, expected 0.875009 for color Green
+Mismatch detected at pixel [0][1], value = 0.000000, expected 0.883280 for color Blue
+ERROR : Mismatch detected between reference and actual
