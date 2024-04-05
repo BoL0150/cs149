@@ -171,7 +171,7 @@ torch::Tensor myNaiveAttention(torch::Tensor QTensor, torch::Tensor KTensor,
           float attention_score = twoDimRead(QK_t, q_token_idx, kv_token_idx, N);
           // attention_score将对应token加权
           for (int dim_idx = 0; dim_idx < d; dim_idx++) {
-            float new_val = attention_score * twoDimRead(V, kv_token_idx, dim_idx, d);
+            float new_val = attention_score * fourDimRead(V, batch_idx, head_idx, kv_token_idx, dim_idx, H, N, d);
             float O_old_val = fourDimRead(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d);
             float O_new_val = new_val + O_old_val;
             fourDimWrite(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d, O_new_val);
@@ -216,6 +216,49 @@ torch::Tensor myUnfusedAttentionBlocked(torch::Tensor QTensor,
   std::vector<float> QK_t = formatTensor(QK_tTensor);
 
   // -------- YOUR CODE HERE  -------- //
+  for (int batch_idx = 0; batch_idx < B; batch_idx++) {
+    for (int head_idx = 0; head_idx < H; head_idx++) {
+      for (int q_token_idx = 0; q_token_idx < N; q_token_idx++) {
+        for (int k_token_idx = 0; k_token_idx < N; k_token_idx++) {
+          float inner_product = 0;
+          for (int i = 0; i < d; i++) {
+            float q_val = fourDimRead(Q, batch_idx, head_idx, q_token_idx, i, H, N, d);
+            float k_val = fourDimRead(K, batch_idx, head_idx, k_token_idx, i, H, N, d);
+            inner_product += q_val * k_val;
+          }
+          twoDimWrite(QK_t, q_token_idx, k_token_idx, N, inner_product);
+        } 
+      }
+      // softmax
+      for (int i = 0; i < N; i++) {
+        float exp_val_sum = 0;
+        for (int j = 0; j < N; j++) {
+          float exp_val = std::exp(twoDimRead(QK_t, i, j, N));
+          exp_val_sum += exp_val;
+          twoDimWrite(QK_t, i, j, N, exp_val);
+        }
+        for (int j = 0; j < N; j++) {
+          float new_val = twoDimRead(QK_t, i, j, N) / exp_val_sum;
+          twoDimWrite(QK_t, i, j, N, new_val);
+        }
+      }
+
+
+      // QK_t * V
+      for (int q_token_idx = 0; q_token_idx < N; q_token_idx++) {
+        for (int kv_token_idx = 0; kv_token_idx < N; kv_token_idx++) {
+          float attention_score = twoDimRead(QK_t, q_token_idx, kv_token_idx, N);
+          // attention_score将对应token加权
+          for (int dim_idx = 0; dim_idx < d; dim_idx++) {
+            float new_val = attention_score * fourDimRead(V, batch_idx, head_idx, kv_token_idx, dim_idx, H, N, d);
+            float O_old_val = fourDimRead(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d);
+            float O_new_val = new_val + O_old_val;
+            fourDimWrite(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d, O_new_val);
+          }
+        }
+      }
+    }
+  }
 
   // DO NOT EDIT THIS RETURN STATEMENT //
   // It formats your C++ Vector O back into a Tensor of Shape (B, H, N, d) and
@@ -254,7 +297,6 @@ torch::Tensor myFusedAttention(torch::Tensor QTensor, torch::Tensor KTensor,
   // We give you a template of the first three loops for your convenience
   // loop over batch
   for (int b = 0; b < B; b++) {
-
     // loop over heads
     for (int h = 0; h < H; h++) {
       for (int i = 0; i < N; i++) {
@@ -267,7 +309,43 @@ torch::Tensor myFusedAttention(torch::Tensor QTensor, torch::Tensor KTensor,
       }
     }
   }
-
+  #pragma omp parallel for collapse(2)
+  for (int batch_idx = 0; batch_idx < B; batch_idx++) {
+    for (int head_idx = 0; head_idx < H; head_idx++) {
+      // YRow is moved inside so each OpenMP thread gets a local copy.
+      at::Tensor ORowTensor = temp.index({torch::indexing::Slice(
+          omp_get_thread_num(), torch::indexing::None)});
+      std::vector<float> ORow = formatTensor(ORowTensor);
+      for (int q_token_idx = 0; q_token_idx < N; q_token_idx++) {
+        for (int k_token_idx = 0; k_token_idx < N; k_token_idx++) {
+          float inner_product = 0;
+          for (int i = 0; i < d; i++) {
+            float q_val = fourDimRead(Q, batch_idx, head_idx, q_token_idx, i, H, N, d);
+            float k_val = fourDimRead(K, batch_idx, head_idx, k_token_idx, i, H, N, d);
+            inner_product += q_val * k_val;
+          }
+          ORow[k_token_idx] = inner_product;
+        } 
+        // softmax
+        float exp_val_sum = 0;
+        for (int i = 0; i < N; i++) {
+          float exp_val = std::exp(ORow[i]);
+          exp_val_sum += exp_val;
+          ORow[i] = exp_val;
+        }
+        for (int i = 0; i < N; i++) {
+          // 每算出来一个softmax值之后可以直接乘以V的一行
+          float attention_score = ORow[i] / exp_val_sum;
+          for (int dim_idx = 0; dim_idx < d; dim_idx++) {
+            float new_val = attention_score * fourDimRead(V, batch_idx, head_idx, i, dim_idx, H, N, d);
+            float O_old_val = fourDimRead(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d);
+            float O_new_val = new_val + O_old_val;
+            fourDimWrite(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d, O_new_val);
+          }
+        }
+      }
+    }
+  }
   // DO NOT EDIT THIS RETURN STATEMENT //
   // It formats your C++ Vector O back into a Tensor of Shape (B, H, N, d) and
   // returns it //
