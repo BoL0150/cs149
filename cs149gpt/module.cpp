@@ -296,14 +296,14 @@ torch::Tensor myFusedAttention(torch::Tensor QTensor, torch::Tensor KTensor,
   std::vector<float> ORow = formatTensor(ORowTensor);
 
   // -------- YOUR CODE HERE  -------- //
-  #pragma omp parallel for collapse(2)
+  #pragma omp parallel for collapse(3)
   for (int batch_idx = 0; batch_idx < B; batch_idx++) {
     for (int head_idx = 0; head_idx < H; head_idx++) {
-      // YRow is moved inside so each OpenMP thread gets a local copy.
-      at::Tensor ORowTensor = temp.index({torch::indexing::Slice(
-          omp_get_thread_num(), torch::indexing::None)});
-      std::vector<float> ORow = formatTensor(ORowTensor);
       for (int q_token_idx = 0; q_token_idx < N; q_token_idx++) {
+        // YRow is moved inside so each OpenMP thread gets a local copy.
+        at::Tensor ORowTensor = temp.index({torch::indexing::Slice(
+            omp_get_thread_num(), torch::indexing::None)});
+        std::vector<float> ORow = formatTensor(ORowTensor);
         for (int k_token_idx = 0; k_token_idx < N; k_token_idx++) {
           float inner_product = 0;
           for (int i = 0; i < d; i++) {
@@ -345,10 +345,10 @@ torch::Tensor myFusedAttention(torch::Tensor QTensor, torch::Tensor KTensor,
       .clone();
 }
 // ---------------------------------------------------------- //
-//                PART 4: FLASH ATTENTION 		      //
+//                PART 4: FLASH ATTENTION V1		      //
 // ---------------------------------------------------------- //
 
-torch::Tensor myFlashAttention(torch::Tensor QTensor, torch::Tensor KTensor,
+torch::Tensor myFlashAttentionV1(torch::Tensor QTensor, torch::Tensor KTensor,
                                torch::Tensor VTensor, torch::Tensor QiTensor,
                                torch::Tensor KjTensor, torch::Tensor VjTensor,
                                torch::Tensor SijTensor, torch::Tensor PijTensor,
@@ -466,6 +466,130 @@ torch::Tensor myFlashAttention(torch::Tensor QTensor, torch::Tensor KTensor,
       .clone();
 }
 
+// ---------------------------------------------------------- //
+//                PART 5: FLASH ATTENTION V2		      //
+// ---------------------------------------------------------- //
+
+torch::Tensor myFlashAttention(torch::Tensor QTensor, torch::Tensor KTensor,
+                               torch::Tensor VTensor, torch::Tensor QiTensor,
+                               torch::Tensor KjTensor, torch::Tensor VjTensor,
+                               torch::Tensor SijTensor, torch::Tensor PijTensor,
+                               torch::Tensor PVTensor, torch::Tensor OiTensor,
+                               torch::Tensor LTensor, torch::Tensor LiTensor,
+                               torch::Tensor LijTensor,
+                               torch::Tensor LnewTensor, int Bc, int Br, int B,
+                               int H, int N, int d) {
+
+  // Q, K, V are passed in with Shape: (B, H, N, d)
+  // Sij, Pij are passed in with Shape: (Br, Bc)
+  // Kj, Vj are passed in with Shape: (Bc, d)
+  // Qi, Oi, and PV  are passed in with Shape: (Br, d)
+  // L in passed in with Shape: (N)
+  // Li, Lij, and Lnew are passed in with shape (Br)
+
+  // Make O Tensor with Shape (B, H, N, d)
+  at::Tensor OTensor = at::zeros({B, H, N, d}, at::kFloat);
+  // Format All Tensors into Vectors
+  std::vector<float> O = formatTensor(OTensor);
+  std::vector<float> Q = formatTensor(QTensor);
+  std::vector<float> K = formatTensor(KTensor);
+  std::vector<float> V = formatTensor(VTensor);
+  std::vector<float> Sij = formatTensor(SijTensor);
+  std::vector<float> Pij = formatTensor(PijTensor);
+  std::vector<float> Kj = formatTensor(KjTensor);
+  std::vector<float> Vj = formatTensor(VjTensor);
+  std::vector<float> Qi = formatTensor(QiTensor);
+  std::vector<float> Oi = formatTensor(OiTensor);
+  // std::vector<float> l = formatTensor(LTensor);
+  // std::vector<float> PV = formatTensor(PVTensor);
+  std::vector<float> li = formatTensor(LiTensor);
+  std::vector<float> Lij = formatTensor(LijTensor);
+  std::vector<float> lnew = formatTensor(LnewTensor);
+
+  // 向上取整计算Tc和Tr
+  int Tc = (N + Bc - 1)/ Bc;
+  int Tr = (N + Br - 1) / Br;
+  int kv_block_size = Bc;
+  int q_block_size = Br;
+  std::vector<float> Mij(q_block_size);
+  std::vector<float> Mi_new(q_block_size);
+  std::vector<float> M(N, INT_MIN);
+  std::vector<float> L(N, 0.0);
+  std::vector<float> PV(d, 0.0);
+  // -------- YOUR CODE HERE  -------- //
+  omp_set_nested(1);
+  #pragma omp parallel for collapse(3) firstprivate(Mij, Mi_new, M, L, PV, lnew, Lij, Sij, Pij)
+  for (int batch_idx = 0; batch_idx < B; batch_idx++) {
+    for (int head_idx = 0; head_idx < H; head_idx++) {
+      for (int q_block_idx = 0; q_block_idx < Tr; q_block_idx++) {
+
+        for (int kv_block_idx = 0; kv_block_idx < Tc; kv_block_idx++) {
+          int q_block_start_idx = q_block_idx * q_block_size;
+          int kv_block_start_idx = kv_block_idx * kv_block_size;
+          q_block_size = std::min(q_block_size, N - q_block_start_idx);
+          kv_block_size = std::min(kv_block_size, N - kv_block_start_idx);
+
+          #pragma omp parallel for firstprivate(PV)
+          for (int q_token_idx = q_block_start_idx; q_token_idx < q_block_start_idx + q_block_size; q_token_idx++) {
+            int max = INT_MIN; 
+            int q_local_idx = q_token_idx - q_block_start_idx;
+            for (int k_token_idx = kv_block_start_idx; k_token_idx < kv_block_start_idx + kv_block_size; k_token_idx++) {
+              int k_local_idx = k_token_idx - kv_block_start_idx;
+              float inner_product = 0;
+              for (int i = 0; i < d; i++) {
+                float q_val = fourDimRead(Q, batch_idx, head_idx, q_token_idx, i, H, N, d);
+                float k_val = fourDimRead(K, batch_idx, head_idx, k_token_idx, i, H, N, d);
+                inner_product += q_val * k_val;
+              }
+              twoDimWrite(Sij, q_local_idx, k_local_idx, kv_block_size, inner_product);
+              max = max > inner_product ? max : inner_product; 
+            }
+            // 存储q与当前的key block的局部attention score的最大值
+            Mij[q_local_idx] = max;
+            float Pij_sum = 0;
+            // 计算q与当前key block的局部attention score的softmax的分母
+            for (int k_local_idx = 0; k_local_idx < kv_block_size; k_local_idx++) {
+              float Sij_val = twoDimRead(Sij, q_local_idx, k_local_idx, kv_block_size);
+              float new_Sij_val = std::exp(Sij_val - Mij[q_local_idx]);
+              twoDimWrite(Pij, q_local_idx, k_local_idx, kv_block_size, new_Sij_val);
+              Pij_sum += new_Sij_val;
+            }
+            Lij[q_local_idx] = Pij_sum;
+            // 到目前为止q的attention score的最大值
+            Mi_new[q_local_idx] = std::max(Mij[q_local_idx], M[q_token_idx]);
+            float exp_Mi_minus_MiNew = std::exp(M[q_token_idx] - Mi_new[q_local_idx]);
+            float exp_Mij_minus_MiNew = std::exp(Mij[q_local_idx] - Mi_new[q_local_idx]);
+            lnew[q_local_idx] = exp_Mi_minus_MiNew * L[q_token_idx] + exp_Mij_minus_MiNew * Lij[q_local_idx];
+            // Pij * Vj
+            for (int k_token_idx = kv_block_start_idx; k_token_idx < kv_block_start_idx + kv_block_size; k_token_idx++) {
+              int k_local_idx = k_token_idx - kv_block_start_idx;
+              float Pij_val = twoDimRead(Pij, q_local_idx, k_local_idx, kv_block_size);
+              for (int dim_idx = 0; dim_idx <d; dim_idx++) {
+                float new_val = Pij_val * fourDimRead(V, batch_idx, head_idx, k_token_idx, dim_idx, H, N, d);
+                PV[dim_idx] += new_val;
+              } 
+            }
+            for (int dim_idx = 0; dim_idx < d; dim_idx++) {
+              float old_O = fourDimRead(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d);
+              float new_O = (L[q_token_idx] * exp_Mi_minus_MiNew * old_O + exp_Mij_minus_MiNew * PV[dim_idx]) / lnew[q_local_idx];
+              fourDimWrite(O, batch_idx, head_idx, q_token_idx, dim_idx, H, N, d, new_O);
+              PV[dim_idx] = 0.0;
+            }
+            L[q_token_idx] = lnew[q_local_idx];
+            M[q_token_idx] = Mi_new[q_local_idx];
+          }
+        }
+      }
+    }
+  }
+
+  // DO NOT EDIT THIS RETURN STATEMENT //
+  // It formats your C++ Vector O back into a Tensor of Shape (B, H, N, d) and
+  // returns it //
+  return torch::from_blob(O.data(), {B, H, N, d},
+                          torch::TensorOptions().dtype(torch::kFloat32))
+      .clone();
+}
 /* DO NOT EDIT THESE BINDINGS */
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("myNaiveAttention", &myNaiveAttention, "Naive Attention");
